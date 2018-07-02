@@ -172,13 +172,21 @@ bool WSCTraceBuilder::is_replaying() const {
 }
 
 void WSCTraceBuilder::cancel_replay(){
-  abort(); /* What is this function used for? */
   if(!replay) return;
   replay = false;
   /* XXX: Reset won't work right if we delete some prefix event
    * corresponding to a decision node that will not be popped on reset.
    */
-  while (prefix_idx + 1 < int(prefix.size())) prefix.pop_back();
+  while (prefix_idx + 1 < int(prefix.size())) {
+    if (prefix.back().decision != -1) {
+      assert((unsigned(prefix.back().decision) == decisions.size()-1
+              && std::all_of(decisions.back().siblings.begin(),
+                             decisions.back().siblings.begin(),
+                             [](const auto &p) { return p.second.is_bottom(); })));
+      decisions.pop_back();
+    }
+    prefix.pop_back();
+  }
 }
 
 void WSCTraceBuilder::metadata(const llvm::MDNode *md){
@@ -410,7 +418,10 @@ void WSCTraceBuilder::atomic_store(const SymData &sd){
 }
 
 static bool symev_is_store(const SymEv &e) {
-  return e.kind == SymEv::UNOBS_STORE || e.kind == SymEv::STORE;
+  assert(e.kind != SymEv::UNOBS_STORE);
+  assert(e.kind != SymEv::CMPXHG);
+  return e.kind == SymEv::STORE || e.kind == SymEv::M_INIT
+    || e.kind == SymEv::M_LOCK || e.kind == SymEv::M_DELETE;
 }
 
 static SymAddrSize sym_get_last_write(const sym_ty &sym, SymAddr addr){
@@ -695,6 +706,7 @@ void WSCTraceBuilder::mutex_unlock(const SymAddrSize &ml){
   assert(mutexes.count(ml.addr));
   Mutex &mutex = mutexes[ml.addr];
   curev().may_conflict = true;
+  curev().read_from = mutex.last_lock;
   assert(0 <= mutex.last_access);
 
   see_events({mutex.last_access,last_full_memory_conflict});
@@ -1168,7 +1180,8 @@ static bool symev_has_pid(const SymEv &e) {
 }
 
 static bool symev_is_load(const SymEv &e) {
-  return e.kind == SymEv::LOAD || e.kind == SymEv::CMPXHGFAIL;
+  assert(e.kind != SymEv::CMPXHGFAIL);
+  return e.kind == SymEv::LOAD || e.kind == SymEv::M_UNLOCK;
 }
 
 static bool symev_is_unobs_store(const SymEv &e) {
@@ -1242,13 +1255,12 @@ bool WSCTraceBuilder::is_observed_conflict
 }
 
 bool WSCTraceBuilder::is_load(unsigned i) const {
-  return std::any_of(prefix[i].sym.begin(), prefix[i].sym.end(),
-                     [](const SymEv &e) { return e.kind == SymEv::LOAD; });
+  return std::any_of(prefix[i].sym.begin(), prefix[i].sym.end(), symev_is_load);
 }
 
 bool WSCTraceBuilder::is_store(unsigned i) const {
   return std::any_of(prefix[i].sym.begin(), prefix[i].sym.end(),
-                     [](const SymEv &e) { return e.kind == SymEv::STORE; });
+                     symev_is_store);
 }
 
 SymAddrSize WSCTraceBuilder::get_addr(unsigned i) const {
