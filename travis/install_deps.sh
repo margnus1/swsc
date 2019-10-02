@@ -79,4 +79,6 @@ if [ -n "$DOWNLOAD_BOOST" ]; then
     else
         echo "Found Cached Boost"
     fi
+else
+    echo "Will use system Boost"
 fi
